@@ -7,7 +7,7 @@ import path from 'node:path';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
 
-import { MisskeyNote } from './types';
+import { MisskeyNote, MisskeyUser } from './types';
 
 const allowSiteList = ['misskey.io', 'madost.one', 'mk.nixnet.social'];
 
@@ -38,7 +38,25 @@ const parseNotes = (data: MisskeyNote[], site: string) =>
             title = `${author}: "${noteToUse.text ?? ''}"`;
         }
 
-        const link = `https://${host}/notes/${noteToUse.id}`;
+        /**
+         * For renotes from non-Misskey instances (e.g. Mastodon, Pleroma),
+         * we can't use noteToUse.id to link to the original note since:
+         * 1. The URL format differs from Misskey's /notes/{id} pattern
+         * 2. Direct access to the original note may not be possible
+         * Therefore, we link to the renote itself in such cases
+         */
+        let noteId = noteToUse.id;
+
+        if (isRenote) {
+            const renoteHost = item.user.host ?? site;
+            const noteHost = noteToUse.user.host ?? site;
+
+            // Use renote's ID if the note is from a different host or not in allowSiteList
+            if (renoteHost !== noteHost || !allowSiteList.includes(noteHost)) {
+                noteId = item.id;
+            }
+        }
+        const link = `https://${host}/notes/${noteId}`;
         const pubDate = parseDate(noteToUse.createdAt);
 
         return {
@@ -53,7 +71,7 @@ async function getUserTimelineByUsername(username, site, { withRenotes = false, 
     const searchUrl = `https://${site}/api/users/search-by-username-and-host`;
     const cacheUid = `misskey_username/${site}/${username}`;
 
-    const accountId = await cache.tryGet(cacheUid, async () => {
+    const userData = (await cache.tryGet(cacheUid, async () => {
         const searchResponse = await got({
             method: 'post',
             url: searchUrl,
@@ -64,13 +82,16 @@ async function getUserTimelineByUsername(username, site, { withRenotes = false, 
                 limit: 1,
             },
         });
-        const userData = searchResponse.data.find((item) => item.username === username);
+        const user = searchResponse.data.find((item) => item.username === username);
 
-        if (!userData) {
+        if (!user) {
             throw new Error(`username ${username} not found`);
         }
-        return userData.id;
-    });
+        return user;
+    })) as MisskeyUser;
+
+    const accountId = userData.id;
+    const avatarUrl = userData.avatarUrl;
 
     // https://misskey.io/api-doc#tag/users/operation/users___notes
     const usernotesUrl = `https://${site}/api/users/notes`;
@@ -88,7 +109,7 @@ async function getUserTimelineByUsername(username, site, { withRenotes = false, 
         },
     });
     const accountData = usernotesResponse.data;
-    return { site, accountId, accountData };
+    return { site, accountId, accountData, avatarUrl };
 }
 
 export default { parseNotes, getUserTimelineByUsername, allowSiteList };
